@@ -1592,14 +1592,14 @@ function LoginPage({ users, setUsers, loginLogs, setLoginLogs, setCurrentUser, s
         if (!regRes.ok) { setVerifyErr(regRes.error || 'สร้างบัญชีไม่สำเร็จ'); setVerifyLoading(false); return; }
         const { token, user: safeUser } = regRes.data;
         setAuthToken(token);
-        setUsersState(p => [...p, safeUser]);
+        setUsers(p => [...p, safeUser]);
         setCurrentUser(safeUser);
         setLoginLogs(p => [{ id: uid(), userId: safeUser.id, userName: safeUser.name, at: now(), ip:'client', isNew:true }, ...p]);
       } else {
         // Offline fallback
         const u = { ...pendingUser };
         delete u.password; // ไม่เก็บ password ใน state
-        setUsersState(p => [...p, u]);
+        setUsers(p => [...p, u]);
         setCurrentUser(u);
       }
       setShowVerify(false);
