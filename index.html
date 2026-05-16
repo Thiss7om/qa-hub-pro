@@ -643,7 +643,7 @@ const detectionOpts = ['Positive','Negative'];
 // ─── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────────────
 // ใส่ URL ของ Google Apps Script Web App ที่ Deploy แล้ว
 // [FIX VULN-06] SS_ID ถูกลบออกจาก client-side code แล้ว — อยู่ใน Code.gs เท่านั้น
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbyrY_mAdxriHRdikguBLuGJq45OzupileZc_qlIhRXWdhLFXqHjcWn07AlQ9dOJrduu3g/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbydDMj7ubs8Ah6GfJCWXg8yhaGNww8OH5i7VyPea3QQXFtT38yxs24DpTdtoNe_KtSMtg/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
 
 // ─── SESSION TOKEN ────────────────────────────────────────────────────────────
 // [FIX VULN-02] Token ออกโดย GAS หลัง login สำเร็จ แนบทุก request
@@ -3098,7 +3098,7 @@ function DashboardPage({ teamTCs, teamDefects, teamProjects, teamTasks, navigate
 }
 
 // ─── PROJECTS PAGE ────────────────────────────────────────────────────────────
-function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, setTestCases, setDefects, teamTasks, currentTeam, currentUser, canEdit, canDelete, showToast, addLog, navigate, USE_GAS }) {
+function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, setTestCases, defects, setDefects, teamTasks, currentTeam, currentUser, canEdit, canDelete, showToast, addLog, navigate, USE_GAS }) {
   const [showModal, setShowModal] = useState(false);
   const [editProj, setEditProj] = useState(null);
   const [form, setForm] = useState({ name:'', description:'', status:'Active', startDate:'', endDate:'', tcMode:'standard' });
