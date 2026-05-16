@@ -1303,7 +1303,7 @@ function App() {
   // LOGIN
   if (!currentUser) {
     return h(React.Fragment, null,
-      h(LoginPage, { ...ctx, navigate }),
+      h(LoginPage, { ...ctx, navigate, setUsersState }),
       toast && h(Toast, { key: toast.id, msg: toast.msg, type: toast.type, onDone: () => setToast(null) })
     );
   }
@@ -1368,7 +1368,7 @@ function App() {
 }
 
 // ─── LOGIN PAGE ───────────────────────────────────────────────────────────────
-function LoginPage({ users, setUsers, loginLogs, setLoginLogs, setCurrentUser, setPage, showToast, navigate, autoJoinCode }) {
+function LoginPage({ users, setUsers, setUsersState, loginLogs, setLoginLogs, setCurrentUser, setPage, showToast, navigate, autoJoinCode }) {
   const [email, setEmail] = useState('');
   const [pass, setPass] = useState('');
   // If there's a pending invite, default to register tab if user likely hasn't registered
