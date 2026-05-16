@@ -1374,7 +1374,7 @@ function App() {
       key: defectModalCtx._key,
       initialTcId: defectModalCtx.initialTcId,
       allTCs: defectModalCtx.allTCs || teamTCs,
-      defects, setDefects, currentUser, users, showToast, addLog,
+      defects, setDefects, currentUser, currentTeam, users, showToast, addLog,
       editDefect: defectModalCtx.editDef || null,
       onClose: closeDefectModal
     }),
@@ -2388,19 +2388,40 @@ function Topbar({ currentUser, setCurrentUser, users, setUsers, currentTeam, set
   const [showSheetPass, setShowSheetPass] = useState(false);
   const [sheetPass, setSheetPass] = useState('');
   const [sheetPassErr, setSheetPassErr] = useState('');
+  const [sheetPassLoading, setSheetPassLoading] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
 
-  const openGoogleSheet = () => {
-    const correctPass = currentUser?.password?.trim() || '';
-    if (sheetPass.trim() === correctPass && correctPass !== '') {
-      setSheetPass(''); setSheetPassErr(''); setShowSheetPass(false);
-      const sheetUrl = (typeof SS_ID !== 'undefined' && SS_ID)
-        ? `https://docs.google.com/spreadsheets/d/${SS_ID}/edit`
-        : 'https://docs.google.com/spreadsheets';
-      window.open(sheetUrl, '_blank');
+  const openGoogleSheet = async () => {
+    if (!sheetPass.trim()) { setSheetPassErr('กรุณากรอกรหัสผ่าน'); return; }
+    // ตรวจ password ผ่าน GAS login action (รองรับ hashed password)
+    if (USE_GAS && typeof api !== 'undefined' && currentUser?.email) {
+      setSheetPassLoading(true);
+      try {
+        const res = await api.rawWrite({ action: 'login', email: currentUser.email, password: sheetPass.trim() });
+        if (!res || res.ok === false) {
+          setSheetPassErr('รหัสผ่านไม่ถูกต้อง — กรุณาใส่รหัสผ่านที่ใช้ Login ของบัญชีคุณ');
+          setSheetPassLoading(false);
+          return;
+        }
+      } catch(e) {
+        setSheetPassErr('เกิดข้อผิดพลาด: ' + e.message);
+        setSheetPassLoading(false);
+        return;
+      }
+      setSheetPassLoading(false);
     } else {
-      setSheetPassErr('รหัสผ่านไม่ถูกต้อง — กรุณาใส่รหัสผ่านที่ใช้ Login ของบัญชีคุณ');
+      // Fallback สำหรับ non-GAS mode: เทียบ plain password ตรง ๆ
+      const correctPass = currentUser?.password?.trim() || '';
+      if (sheetPass.trim() !== correctPass || !correctPass) {
+        setSheetPassErr('รหัสผ่านไม่ถูกต้อง — กรุณาใส่รหัสผ่านที่ใช้ Login ของบัญชีคุณ');
+        return;
+      }
     }
+    setSheetPass(''); setSheetPassErr(''); setShowSheetPass(false);
+    const sheetUrl = (typeof SS_ID !== 'undefined' && SS_ID)
+      ? `https://docs.google.com/spreadsheets/d/${SS_ID}/edit`
+      : 'https://docs.google.com/spreadsheets';
+    window.open(sheetUrl, '_blank');
   };
 
   // Render avatar: icon or initial
@@ -4321,7 +4342,7 @@ function TCModal({ tc, task, project, testCases, setTestCases, defects, setDefec
   return ReactDOM.createPortal(_portalEl, document.getElementById('modal-root'));
 }
 
-function DefectModal({ initialTcId, allTCs, defects, setDefects, currentUser, users, showToast, addLog, onClose, editDefect }) {
+function DefectModal({ initialTcId, allTCs, defects, setDefects, currentUser, currentTeam, users, showToast, addLog, onClose, editDefect }) {
   const isEdit = !!editDefect;
   const editId = useRef(editDefect?.id ?? null); // stable ref — ไม่เปลี่ยนแม้ props re-render
   const safeAllTCs = useRef(allTCs || []).current; // snapshot ณ ตอนเปิด modal — ไม่ re-compute ระหว่างพิมพ์
@@ -4362,7 +4383,7 @@ function DefectModal({ initialTcId, allTCs, defects, setDefects, currentUser, us
       addLog('Update Defect','แก้ไข Defect: '+form.title);
       showToast('อัปเดต Defect สำเร็จ');
     } else {
-      const nd = { id:uid(), testCaseId:form.relatedTcIds[0]||null, relatedTcIds:form.relatedTcIds, createdBy:currentUser.id, createdAt:now(), defectId:'DEF-'+uid().slice(0,5).toUpperCase(), files:[], ...form };
+      const nd = { id:uid(), teamId:currentTeam?.id||null, testCaseId:form.relatedTcIds[0]||null, relatedTcIds:form.relatedTcIds, createdBy:currentUser.id, createdAt:now(), defectId:'DEF-'+uid().slice(0,5).toUpperCase(), files:[], ...form };
       setDefects(p=>[...p,nd]);
       addLog('Create Defect','สร้าง Defect: '+form.title);
       showToast('สร้าง Defect สำเร็จ');
