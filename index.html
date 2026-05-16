@@ -643,7 +643,7 @@ const detectionOpts = ['Positive','Negative'];
 // ─── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────────────
 // ใส่ URL ของ Google Apps Script Web App ที่ Deploy แล้ว
 // [FIX VULN-06] SS_ID ถูกลบออกจาก client-side code แล้ว — อยู่ใน Code.gs เท่านั้น
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbxzNUkXJRmnvRH02DP5zqD5-VZgd88ma_VNAfKGDWb5NMBCZ9w6j2vN4Mu6OprluCLWFg/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbzFM5HJr4KF_XVCZAfVH2pgyPdOq7aua2kr-31BfPgG27MFWceBWHip2asHaDp414T32Q/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
 
 // ─── SESSION TOKEN ────────────────────────────────────────────────────────────
 // [FIX VULN-02] Token ออกโดย GAS หลัง login สำเร็จ แนบทุก request
@@ -951,6 +951,16 @@ function App() {
     defects:'qah_defects', logs:'qah_logs', loginLogs:'qah_login_logs', pending:'qah_pending_members' };
 
   // ── Core sync: diff old vs new, push only changes ──
+  // [FIX v13] ใช้ stableStringify เพื่อ sort keys ก่อนเปรียบเทียบ — ป้องกัน false-negative จาก key order ต่างกัน
+  const stableStr = (obj) => {
+    if (obj === null || obj === undefined) return String(obj);
+    if (Array.isArray(obj)) return '[' + obj.map(stableStr).join(',') + ']';
+    if (typeof obj === 'object') {
+      return '{' + Object.keys(obj).sort().map(k => JSON.stringify(k) + ':' + stableStr(obj[k])).join(',') + '}';
+    }
+    return JSON.stringify(obj);
+  };
+
   const syncSheet = useCallback((sheet, newData, oldData) => {
     if (!USE_GAS_REF.current) {
       setSession(LS_KEY[sheet] || sheet, newData);
@@ -973,7 +983,7 @@ function App() {
     });
     // UPDATE changed rows
     newData.forEach(item => {
-      if (oldMap[item.id] && JSON.stringify(oldMap[item.id]) !== JSON.stringify(item)) {
+      if (oldMap[item.id] && stableStr(oldMap[item.id]) !== stableStr(item)) {
         api.update(sheet, item).catch(e => onErr('update', item.id, e));
       }
     });
@@ -3014,7 +3024,7 @@ function ProjectsPage({ teamProjects, setProjects, tasks, teamTasks, currentTeam
   const save = () => {
     if (!form.name.trim()) { showToast('กรุณาใส่ชื่อ Project','error'); return; }
     if (editProj) {
-      setProjects(p => p.map(x => x.id===editProj.id ? {...x,...form,updatedAt:now()} : x));
+      setProjects(p => p.map(x => x.id===editProj.id ? {...x,...form,updatedAt:now(),updatedBy:currentUser.id} : x));
       addLog('Update Project', `แก้ไข Project: ${form.name}`);
       showToast('อัพเดท Project สำเร็จ');
     } else {
@@ -3096,7 +3106,7 @@ function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, teamT
   const save = () => {
     if (!form.name.trim()) { showToast('กรุณาใส่ชื่อ Task','error'); return; }
     if (editTask) {
-      setTasks(p => p.map(x => x.id===editTask.id ? {...x,...form,updatedAt:now()} : x));
+      setTasks(p => p.map(x => x.id===editTask.id ? {...x,...form,updatedAt:now(),updatedBy:currentUser.id} : x));
       addLog('Update Task', `แก้ไข Task: ${form.name}`);
       showToast('อัพเดท Task สำเร็จ');
     } else {
@@ -3286,7 +3296,7 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
   };
 
   const moveTCs = (tcIds, targetTaskId) => {
-    setTestCases(p => p.map(x => tcIds.includes(x.id) ? { ...x, taskId: targetTaskId, updatedAt: now() } : x));
+    setTestCases(p => p.map(x => tcIds.includes(x.id) ? { ...x, taskId: targetTaskId, updatedAt: now(), updatedBy: currentUser.id } : x));
     addLog('Move TC', `ย้าย ${tcIds.length} TC → taskId: ${targetTaskId}`);
     showToast(`ย้าย ${tcIds.length} Test Case สำเร็จ`);
     setSelected([]);
@@ -3527,13 +3537,13 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
         h('span',{style:{fontSize:'13px',color:'var(--text2)',fontWeight:'500'}},`เลือก ${selected.length} รายการ:`),
         h('div',{style:{display:'flex',alignItems:'center',gap:'6px'}},
           h('span',{style:{fontSize:'12px',color:'var(--text3)'}},'Priority:'),
-          h('select',{className:'form-select',style:{width:'100px',padding:'4px 8px',fontSize:'12px'},onChange:e=>{if(!e.target.value)return;const v=e.target.value;setTestCases(p=>p.map(x=>selected.includes(x.id)?{...x,priority:v,updatedAt:now()}:x));addLog('Bulk Update','แก้ไข Priority '+selected.length+' TCs → '+v);showToast(`อัพเดท Priority ${selected.length} รายการ`);e.target.value='';},defaultValue:''},
+          h('select',{className:'form-select',style:{width:'100px',padding:'4px 8px',fontSize:'12px'},onChange:e=>{if(!e.target.value)return;const v=e.target.value;setTestCases(p=>p.map(x=>selected.includes(x.id)?{...x,priority:v,updatedAt:now(),updatedBy:currentUser.id}:x));addLog('Bulk Update','แก้ไข Priority '+selected.length+' TCs → '+v);showToast(`อัพเดท Priority ${selected.length} รายการ`);e.target.value='';},defaultValue:''},
             h('option',{value:''},'เลือก...'),priorityOpts.map(s=>h('option',{key:s,value:s},s))
           )
         ),
         h('div',{style:{display:'flex',alignItems:'center',gap:'6px'}},
           h('span',{style:{fontSize:'12px',color:'var(--text3)'}},'Detection:'),
-          h('select',{className:'form-select',style:{width:'110px',padding:'4px 8px',fontSize:'12px'},onChange:e=>{if(!e.target.value)return;const v=e.target.value;setTestCases(p=>p.map(x=>selected.includes(x.id)?{...x,detection:v,updatedAt:now()}:x));addLog('Bulk Update','แก้ไข Detection '+selected.length+' TCs → '+v);showToast(`อัพเดท Detection ${selected.length} รายการ`);e.target.value='';},defaultValue:''},
+          h('select',{className:'form-select',style:{width:'110px',padding:'4px 8px',fontSize:'12px'},onChange:e=>{if(!e.target.value)return;const v=e.target.value;setTestCases(p=>p.map(x=>selected.includes(x.id)?{...x,detection:v,updatedAt:now(),updatedBy:currentUser.id}:x));addLog('Bulk Update','แก้ไข Detection '+selected.length+' TCs → '+v);showToast(`อัพเดท Detection ${selected.length} รายการ`);e.target.value='';},defaultValue:''},
             h('option',{value:''},'เลือก...'),detectionOpts.map(s=>h('option',{key:s,value:s},s))
           )
         ),
@@ -3543,7 +3553,7 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
             if(['Pass with Comment','Cancelled','Deferred'].includes(v)){
               setTcCommentPending({tc:{id:'__bulk__',title:`${selected.length} Test Cases ที่เลือก`,_bulkIds:selected},newStatus:v});
             } else {
-              setTestCases(p=>p.map(x=>selected.includes(x.id)?{...x,status:v,updatedAt:now()}:x));addLog('Bulk Update','แก้ไข Status '+selected.length+' TCs → '+v);showToast(`อัพเดท Status ${selected.length} รายการ`);
+              setTestCases(p=>p.map(x=>selected.includes(x.id)?{...x,status:v,updatedAt:now(),updatedBy:currentUser.id}:x));addLog('Bulk Update','แก้ไข Status '+selected.length+' TCs → '+v);showToast(`อัพเดท Status ${selected.length} รายการ`);
             }
             e.target.value='';},defaultValue:''},
             [h('option',{key:'',value:''},'เลือก...'),...statusOpts.map(s=>h('option',{key:s,value:s},s))]
@@ -3601,13 +3611,13 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
                 className:'form-select',
                 style:{width:'90px',padding:'3px 6px',fontSize:'12px',background:'var(--bg3)'},
                 value:tc.priority,
-                onChange:e=>{e.stopPropagation();setTestCases(p=>p.map(x=>x.id===tc.id?{...x,priority:e.target.value,updatedAt:now()}:x));addLog('Update TC',`แก้ไข Priority: ${tc.title} → ${e.target.value}`);showToast('อัพเดทแล้ว');}
+                onChange:e=>{e.stopPropagation();setTestCases(p=>p.map(x=>x.id===tc.id?{...x,priority:e.target.value,updatedAt:now(),updatedBy:currentUser.id}:x));addLog('Update TC',`แก้ไข Priority: ${tc.title} → ${e.target.value}`);showToast('อัพเดทแล้ว');}
               },priorityOpts.map(s=>h('option',{key:s,value:s},s)))),
               h('td',null,h('select',{
                 className:'form-select',
                 style:{width:'100px',padding:'3px 6px',fontSize:'12px',background:'var(--bg3)'},
                 value:tc.detection,
-                onChange:e=>{e.stopPropagation();setTestCases(p=>p.map(x=>x.id===tc.id?{...x,detection:e.target.value,updatedAt:now()}:x));addLog('Update TC',`แก้ไข Detection: ${tc.title} → ${e.target.value}`);showToast('อัพเดทแล้ว');}
+                onChange:e=>{e.stopPropagation();setTestCases(p=>p.map(x=>x.id===tc.id?{...x,detection:e.target.value,updatedAt:now(),updatedBy:currentUser.id}:x));addLog('Update TC',`แก้ไข Detection: ${tc.title} → ${e.target.value}`);showToast('อัพเดทแล้ว');}
               },detectionOpts.map(s=>h('option',{key:s,value:s},s)))),
               h('td',null,h('select',{
                 className:'form-select',
@@ -3619,7 +3629,7 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
                   if(['Pass with Comment','Cancelled','Deferred'].includes(v)){
                     setTcCommentPending({tc,newStatus:v});
                   } else {
-                    setTestCases(p=>p.map(x=>x.id===tc.id?{...x,status:v,updatedAt:now()}:x));
+                    setTestCases(p=>p.map(x=>x.id===tc.id?{...x,status:v,updatedAt:now(),updatedBy:currentUser.id}:x));
                     addLog('Update TC',`แก้ไข Status: ${tc.title} → ${v}`);
                     showToast('อัพเดทแล้ว');
                   }
@@ -3695,11 +3705,11 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
                 const {tc,newStatus}=tcCommentPending;
                 if(tc.id==='__bulk__'){
                   const bulkIds=tc._bulkIds||[];
-                  setTestCases(p=>p.map(x=>bulkIds.includes(x.id)?{...x,status:newStatus,comment:tcCommentInput,updatedAt:now()}:x));
+                  setTestCases(p=>p.map(x=>bulkIds.includes(x.id)?{...x,status:newStatus,comment:tcCommentInput,updatedAt:now(),updatedBy:currentUser.id}:x));
                   addLog('Bulk Update','แก้ไข Status '+bulkIds.length+' TCs → '+newStatus);
                   showToast(`อัพเดท Status ${bulkIds.length} รายการ`);
                 } else {
-                  setTestCases(p=>p.map(x=>x.id===tc.id?{...x,status:newStatus,comment:tcCommentInput,updatedAt:now()}:x));
+                  setTestCases(p=>p.map(x=>x.id===tc.id?{...x,status:newStatus,comment:tcCommentInput,updatedAt:now(),updatedBy:currentUser.id}:x));
                   addLog('Update TC','แก้ไข Status: '+tc.title+' → '+newStatus);
                   showToast('อัพเดทแล้ว');
                 }
@@ -4285,7 +4295,7 @@ function DefectModal({ initialTcId, allTCs, defects, setDefects, currentUser, us
     setCommentError(false);
     if (isEdit) {
       const targetId = editId.current;
-      setDefects(p=>p.map(x=>x.id===targetId?{...x,...form,updatedAt:now()}:x));
+      setDefects(p=>p.map(x=>x.id===targetId?{...x,...form,updatedAt:now(),updatedBy:currentUser.id}:x));
       addLog('Update Defect','แก้ไข Defect: '+form.title);
       showToast('อัปเดต Defect สำเร็จ');
     } else {
@@ -4451,7 +4461,7 @@ function DefectsPage({ teamDefects, setDefects, testCases, teamTCs, teamTasks, t
     if(['Re-Open','Rejected'].includes(status)){
       setDefCommentPending({defect,newStatus:status});
     } else {
-      setDefects(p=>p.map(x=>x.id===defect.id?{...x,status,updatedAt:now()}:x));
+      setDefects(p=>p.map(x=>x.id===defect.id?{...x,status,updatedAt:now(),updatedBy:currentUser.id}:x));
       addLog('Update Defect','เปลี่ยน Status: '+status);
       showToast('อัพเดทแล้ว');
     }
@@ -4573,7 +4583,7 @@ function DefectsPage({ teamDefects, setDefects, testCases, teamTCs, teamTasks, t
               onClick:()=>{
                 if(!defCommentInput.trim()){showToast('กรุณาใส่ Comment','error');return;}
                 const {defect,newStatus}=defCommentPending;
-                setDefects(p=>p.map(x=>x.id===defect.id?{...x,status:newStatus,comment:defCommentInput,updatedAt:now()}:x));
+                setDefects(p=>p.map(x=>x.id===defect.id?{...x,status:newStatus,comment:defCommentInput,updatedAt:now(),updatedBy:currentUser.id}:x));
                 addLog('Update Defect','เปลี่ยน Status: '+defect.title+' → '+newStatus);
                 showToast('อัพเดทแล้ว');
                 setDefCommentPending(null);
