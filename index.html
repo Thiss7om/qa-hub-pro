@@ -643,7 +643,7 @@ const detectionOpts = ['Positive','Negative'];
 // ─── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────────────
 // ใส่ URL ของ Google Apps Script Web App ที่ Deploy แล้ว
 // [FIX VULN-06] SS_ID ถูกลบออกจาก client-side code แล้ว — อยู่ใน Code.gs เท่านั้น
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbw79NknzesIBlsSd36Uzvk5h1SG21DtEanSmZo0L3-5ijQd6-8vjgLNRvj0miSfUtuzlw/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbxKCnlb6soRriW1ke-S9s0vR-2jLod0usV5abOSLUS3PDVvua2y9viMXBPCLzRslbtAPw/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
 
 // ─── SESSION TOKEN ────────────────────────────────────────────────────────────
 // [FIX VULN-02] Token ออกโดย GAS หลัง login สำเร็จ แนบทุก request
@@ -804,18 +804,14 @@ const api = {
   write(payload)          { return this._write(payload); },
 
   // rawWrite — สำหรับ sendVerifyCode / verifyCode / login / register (ไม่ต้อง token)
+  // ✅ กลับมาใช้ GET เหมือนเดิม
   async rawWrite(payload) {
     const jsonStr = JSON.stringify(payload);
     const bytes   = new TextEncoder().encode(jsonStr);
     let _bin = ''; for (let i = 0; i < bytes.length; i++) _bin += String.fromCharCode(bytes[i]);
     const b64 = btoa(_bin);
-    const url = `${GAS_URL}?t=${Date.now()}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `payload=${encodeURIComponent(b64)}`
-    });
+    const url = `${GAS_URL}?payload=${encodeURIComponent(b64)}&t=${Date.now()}`;
+    const res = await fetch(url, { redirect: 'follow' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   },
