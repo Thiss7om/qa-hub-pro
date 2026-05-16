@@ -643,7 +643,7 @@ const detectionOpts = ['Positive','Negative'];
 // ─── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────────────
 // ใส่ URL ของ Google Apps Script Web App ที่ Deploy แล้ว
 // [FIX VULN-06] SS_ID ถูกลบออกจาก client-side code แล้ว — อยู่ใน Code.gs เท่านั้น
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbxKCnlb6soRriW1ke-S9s0vR-2jLod0usV5abOSLUS3PDVvua2y9viMXBPCLzRslbtAPw/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbxzNUkXJRmnvRH02DP5zqD5-VZgd88ma_VNAfKGDWb5NMBCZ9w6j2vN4Mu6OprluCLWFg/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
 
 // ─── SESSION TOKEN ────────────────────────────────────────────────────────────
 // [FIX VULN-02] Token ออกโดย GAS หลัง login สำเร็จ แนบทุก request
@@ -1593,14 +1593,14 @@ function LoginPage({ users, setUsers, loginLogs, setLoginLogs, setCurrentUser, s
         if (!regRes.ok) { setVerifyErr(regRes.error || 'สร้างบัญชีไม่สำเร็จ'); setVerifyLoading(false); return; }
         const { token, user: safeUser } = regRes.data;
         setAuthToken(token);
-        setUsers(p => [...p, safeUser]);
+        setUsersState(p => [...p, safeUser]);
         setCurrentUser(safeUser);
         setLoginLogs(p => [{ id: uid(), userId: safeUser.id, userName: safeUser.name, at: now(), ip:'client', isNew:true }, ...p]);
       } else {
         // Offline fallback
         const u = { ...pendingUser };
         delete u.password; // ไม่เก็บ password ใน state
-        setUsers(p => [...p, u]);
+        setUsersState(p => [...p, u]);
         setCurrentUser(u);
       }
       setShowVerify(false);
