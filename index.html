@@ -643,7 +643,7 @@ const detectionOpts = ['Positive','Negative'];
 // ─── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────────────
 // ใส่ URL ของ Google Apps Script Web App ที่ Deploy แล้ว
 // [FIX VULN-06] SS_ID ถูกลบออกจาก client-side code แล้ว — อยู่ใน Code.gs เท่านั้น
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbw_pgzGYU58TpxXa--YC2D7mCVZGvGbGXiGSiofZvanSaRmrawEwY_hiWd1g9aIHwFk3Q/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbyrY_mAdxriHRdikguBLuGJq45OzupileZc_qlIhRXWdhLFXqHjcWn07AlQ9dOJrduu3g/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
 
 // ─── SESSION TOKEN ────────────────────────────────────────────────────────────
 // [FIX VULN-02] Token ออกโดย GAS หลัง login สำเร็จ แนบทุก request
@@ -958,7 +958,9 @@ function App() {
   // ── Core sync: diff old vs new, push only changes ──
   // [FIX v13] ใช้ stableStringify เพื่อ sort keys ก่อนเปรียบเทียบ — ป้องกัน false-negative จาก key order ต่างกัน
   const stableStr = (obj) => {
-    if (obj === null || obj === undefined) return String(obj);
+    // [FIX v13] normalize null/undefined/empty-string ให้เป็นค่าเดียวกัน
+    // เพื่อป้องกัน false-negative update เมื่อ GAS return null แต่ client set ''
+    if (obj === null || obj === undefined || obj === '') return '__EMPTY__';
     if (Array.isArray(obj)) return '[' + obj.map(stableStr).join(',') + ']';
     if (typeof obj === 'object') {
       return '{' + Object.keys(obj).sort().map(k => JSON.stringify(k) + ':' + stableStr(obj[k])).join(',') + '}';
@@ -1539,8 +1541,9 @@ function LoginPage({ users, setUsers, setUsersState, setTeamsState, setMembersSt
         // [FIX VULN-02][FIX VULN-04] Server-side login — GAS ตรวจ hash + ออก token
         const res = await api.rawWrite({ action: 'login', email: emailTrim, password: passTrim });
         if (!res.ok) { setErr(res.error || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง'); setLoginLoading(false); return; }
-        const { token, user: safeUser } = res.data;
+        const { token, user: safeUser, spreadsheetId } = res.data;
         setAuthToken(token);
+        if (spreadsheetId) setSession('qah_ssid', spreadsheetId);
         setCurrentUser(safeUser);
         showToast(`ยินดีต้อนรับ, ${safeUser.name}!`);
         // [FIX] โหลดข้อมูลจาก Sheets หลัง login — useEffect ตอน startup bail-out เพราะไม่มี token
@@ -1623,8 +1626,9 @@ function LoginPage({ users, setUsers, setUsersState, setTeamsState, setMembersSt
           color: pendingUser.color
         });
         if (!regRes.ok) { setVerifyErr(regRes.error || 'สร้างบัญชีไม่สำเร็จ'); setVerifyLoading(false); return; }
-        const { token, user: safeUser } = regRes.data;
+        const { token, user: safeUser, spreadsheetId } = regRes.data;
         setAuthToken(token);
+        if (spreadsheetId) setSession('qah_ssid', spreadsheetId);
         setCurrentUser(safeUser);
         setShowVerify(false);
         showToast('ยืนยันอีเมลสำเร็จ — ยินดีต้อนรับ!');
@@ -2418,8 +2422,9 @@ function Topbar({ currentUser, setCurrentUser, users, setUsers, currentTeam, set
       }
     }
     setSheetPass(''); setSheetPassErr(''); setShowSheetPass(false);
-    const sheetUrl = (typeof SS_ID !== 'undefined' && SS_ID)
-      ? `https://docs.google.com/spreadsheets/d/${SS_ID}/edit`
+    const ssId = getSession('qah_ssid', '');
+    const sheetUrl = ssId
+      ? `https://docs.google.com/spreadsheets/d/${ssId}/edit`
       : 'https://docs.google.com/spreadsheets';
     window.open(sheetUrl, '_blank');
   };
@@ -3093,7 +3098,7 @@ function DashboardPage({ teamTCs, teamDefects, teamProjects, teamTasks, navigate
 }
 
 // ─── PROJECTS PAGE ────────────────────────────────────────────────────────────
-function ProjectsPage({ teamProjects, setProjects, tasks, teamTasks, currentTeam, currentUser, canEdit, canDelete, showToast, addLog, navigate, USE_GAS }) {
+function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, setTestCases, setDefects, teamTasks, currentTeam, currentUser, canEdit, canDelete, showToast, addLog, navigate, USE_GAS }) {
   const [showModal, setShowModal] = useState(false);
   const [editProj, setEditProj] = useState(null);
   const [form, setForm] = useState({ name:'', description:'', status:'Active', startDate:'', endDate:'', tcMode:'standard' });
@@ -3121,7 +3126,18 @@ function ProjectsPage({ teamProjects, setProjects, tasks, teamTasks, currentTeam
   };
 
   const deleteProj = (p) => {
-    setProjects(pr => pr.filter(x=>x.id!==p.id));
+    // cascade delete: tasks → testCases → defects ก่อนลบ project
+    const projTaskIds = tasks.filter(t => t.projectId === p.id).map(t => t.id);
+    setDefects(prev => prev.filter(d => {
+      const tc = (testCases || []).find(x => x.id === d.testCaseId);
+      return !(tc && projTaskIds.includes(tc.taskId));
+    }));
+    setTestCases(prev => prev.filter(tc => {
+      const task = tasks.find(t => t.id === tc.taskId);
+      return !(task && task.projectId === p.id);
+    }));
+    setTasks(prev => prev.filter(t => t.projectId !== p.id));
+    setProjects(pr => pr.filter(x => x.id !== p.id));
     addLog('Delete Project', `ลบ Project: ${p.name} (cascade)`);
     showToast(`ลบ Project "${p.name}" และข้อมูลทั้งหมดสำเร็จ`);
     setDelConfirm(null);
@@ -3175,7 +3191,7 @@ function ProjectsPage({ teamProjects, setProjects, tasks, teamTasks, currentTeam
 }
 
 // ─── PROJECT DETAIL PAGE ──────────────────────────────────────────────────────
-function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, teamTCs, teamTasks, currentUser, currentTeam, canEdit, canDelete, showToast, addLog, navigate }) {
+function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, setTestCases, defects, setDefects, teamTCs, teamTasks, currentUser, currentTeam, canEdit, canDelete, showToast, addLog, navigate }) {
   const project = projects.find(p => p.id === navCtx.projectId);
   const [showModal, setShowModal] = useState(false);
   const [editTask, setEditTask] = useState(null);
@@ -3206,6 +3222,12 @@ function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, teamT
   const openEdit = (t) => { setForm({name:t.name,description:t.description||'',status:t.status||'Active',priority:t.priority||'Medium',assignee:t.assignee||''}); setEditTask(t); setShowModal(true); };
 
   const deleteTask = (t) => {
+    // cascade delete: testCases → defects ก่อนลบ task
+    setDefects(prev => prev.filter(d => {
+      const tc = testCases.find(x => x.id === d.testCaseId);
+      return !(tc && tc.taskId === t.id);
+    }));
+    setTestCases(prev => prev.filter(tc => tc.taskId !== t.id));
     setTasks(p => p.filter(x => x.id !== t.id));
     addLog('Delete Task', `ลบ Task: ${t.name}`);
     showToast(`ลบ Task "${t.name}" สำเร็จ`);
@@ -3336,6 +3358,12 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
   });
 
   const deleteTC = (tc) => {
+    // [FIX v13] ลบ defects ที่ผูกกับ TC นี้ผ่าน api.delete โดยตรงก่อน
+    // จากนั้นลบ TC ผ่าน setTestCases (makeSet) ตามปกติ
+    // และลบ defects ออกจาก local state ผ่าน setDefects (makeSet) เช่นกัน
+    // syncSheet diff จะ detect delete ถูกต้องเพราะ defects linked TC นี้หายไปจาก newData
+    const linkedDefects = defects.filter(d => d.testCaseId === tc.id);
+    // ลบ TC และ defects ใน local state พร้อมกัน — syncSheet จะ diff และส่ง api.delete อัตโนมัติ
     setTestCases(p => p.filter(x => x.id !== tc.id));
     setDefects(p => p.filter(x => x.testCaseId !== tc.id));
     addLog('Delete TC', `ลบ TC: ${tc.title}`);
@@ -3373,8 +3401,11 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
   };
 
   const deleteSelected = () => {
-    selected.forEach(id => { const tc=testCases.find(x=>x.id===id); if(tc){ setDefects(p=>p.filter(x=>x.testCaseId!==id)); } });
-    setTestCases(p => p.filter(x => !selected.includes(x.id)));
+    // [FIX v13] ลบ TCs ทั้งหมดพร้อมกัน แล้วลบ defects ที่ผูกไว้ทีเดียว (ไม่ loop setDefects)
+    const selectedSet = new Set(selected);
+    setTestCases(p => p.filter(x => !selectedSet.has(x.id)));
+    setDefects(p => p.filter(x => !selectedSet.has(x.testCaseId)));
+    addLog('Bulk Delete TC', `ลบ ${selected.length} TC`);
     showToast(`ลบ ${selected.length} Test Cases สำเร็จ`);
     setSelected([]);
   };
