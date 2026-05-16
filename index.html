@@ -7,14 +7,14 @@
 <meta http-equiv="Content-Security-Policy"
   content="default-src 'self';
            script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
-           style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+           style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com;
            font-src https://fonts.gstatic.com;
-           connect-src 'self' https://script.google.com https://script.googleusercontent.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com;
+           connect-src 'self' https://script.google.com https://script.googleusercontent.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com;
            img-src 'self' data: blob:;
            object-src 'none';
            base-uri 'self';">
-<title>QAHUBs — Test Management</title>
-<!-- QAHUBs v12 | Security Hardened
+<title>QAHUBs — Test Management v13</title>
+<!-- QAHUBs v13 | Security Hardened + createTeam Race Condition Fix
      Fixes applied:
        [CRITICAL-1] Reset password via dedicated GAS action + OTP binding
        [CRITICAL-2] Hardcoded secrets removed — Script Properties only
@@ -643,7 +643,7 @@ const detectionOpts = ['Positive','Negative'];
 // ─── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────────────
 // ใส่ URL ของ Google Apps Script Web App ที่ Deploy แล้ว
 // [FIX VULN-06] SS_ID ถูกลบออกจาก client-side code แล้ว — อยู่ใน Code.gs เท่านั้น
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbwLbcmjyQBWNXwJsJJDw35C7DjYxlaAA3KosA92jNSEMeDOUbTrJhLKeOAR9M8ZPbBDZA/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbw_pgzGYU58TpxXa--YC2D7mCVZGvGbGXiGSiofZvanSaRmrawEwY_hiWd1g9aIHwFk3Q/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
 
 // ─── SESSION TOKEN ────────────────────────────────────────────────────────────
 // [FIX VULN-02] Token ออกโดย GAS หลัง login สำเร็จ แนบทุก request
@@ -1283,7 +1283,7 @@ function App() {
     }
   }, [loading, currentUser, currentTeam]); // รัน 1 ครั้งหลัง data + session พร้อม
 
-  const ctx = { users, setUsers, teams, setTeams, members, setMembers,
+  const ctx = { users, setUsers, teams, setTeams, members, setMembers, setTeamsState, setMembersState,
     projects, setProjects, tasks, setTasks, testCases, setTestCases,
     defects, setDefects, logs, setLogs, loginLogs, setLoginLogs,
     currentUser, setCurrentUser, currentTeam, setCurrentTeam,
@@ -2144,27 +2144,46 @@ function InviteWaitingPage({ teamName, teamId, currentUser, pendingMembers, setP
 }
 
 // ─── TEAM SELECT PAGE ─────────────────────────────────────────────────────────
-function TeamSelectPage({ currentUser, teams, setTeams, members, setMembers, myTeams, setCurrentTeam, setPage, showToast, addLog, pendingMembers, setPendingMembers, autoJoinCode, setAutoJoinCode, processInvite, setInviteWaitingTeam }) {
+function TeamSelectPage({ currentUser, teams, setTeams, setTeamsState, members, setMembers, setMembersState, myTeams, setCurrentTeam, setPage, showToast, addLog, pendingMembers, setPendingMembers, autoJoinCode, setAutoJoinCode, processInvite, setInviteWaitingTeam }) {
   const [showCreate, setShowCreate] = useState(false);
   const [teamName, setTeamName] = useState('');
   const [inviteCode, setInviteCode] = useState(autoJoinCode || '');
   const [showJoin, setShowJoin] = useState(!!autoJoinCode);
   const [joinErr, setJoinErr] = useState('');
+  const [creating, setCreating] = useState(false);
   useEffect(() => {
     if (autoJoinCode) { setInviteCode(autoJoinCode); setShowJoin(true); }
   }, [autoJoinCode]);
 
-  const createTeam = () => {
-    if (!teamName.trim()) return;
+  // [FIX v13] createTeam — แก้ race condition:
+  // เดิม setTeams + setMembers เรียก api.insert พร้อมกัน → GAS อาจได้รับ insert members
+  // ก่อน insert teams → server หา team ไม่เจอ → isFirstMemberInsert=false → Forbidden
+  // แก้: await api.insert(teams) ก่อน แล้วค่อย await api.insert(members)
+  const createTeam = async () => {
+    if (!teamName.trim() || creating) return;
+    setCreating(true);
     const teamIcons = ['🚀','⚡','🎯','🔥','💎','🛡️','🌟','🔬'];
     const teamColors = ['#4f8ef7','#34d399','#f472b6','#a78bfa','#fbbf24','#f87171','#60a5fa','#a3e635'];
     const rndIdx = Math.floor(Math.random()*8);
     const t = { id: uid(), name: teamName.trim(), icon: teamIcons[rndIdx], color: teamColors[rndIdx], createdBy: currentUser.id, inviteCode: uid().slice(0,8), createdAt: now() };
-    setTeams(p => [...p, t]);
-    setMembers(p => [...p, { id: uid(), teamId: t.id, userId: currentUser.id, role: 'admin', joinedAt: now() }]);
-    setCurrentTeam(t);
-    setPage('dashboard');
-    showToast(`ทีม "${teamName}" สร้างสำเร็จ!`);
+    const newMember = { id: uid(), teamId: t.id, userId: currentUser.id, role: 'admin', joinedAt: now() };
+    try {
+      // Step 1: บันทึก team ก่อน (server ต้องเห็น team.createdBy ก่อน จึงจะอนุญาต insert member)
+      await api.insert('teams', t);
+      // Step 2: บันทึก member หลังจาก team commit แล้วเท่านั้น
+      await api.insert('members', newMember);
+      // Step 3: update local state โดยตรง (ไม่ผ่าน makeSet เพื่อหลีกเลี่ยง double-write ไป GAS อีกรอบ)
+      (setTeamsState || setTeams)(p => [...p, t]);
+      (setMembersState || setMembers)(p => [...p, newMember]);
+      setCurrentTeam(t);
+      setPage('dashboard');
+      showToast(`ทีม "${t.name}" สร้างสำเร็จ!`);
+    } catch(e) {
+      showToast(`สร้างทีมล้มเหลว: ${e.message}`, 'error');
+      console.error('[QAHUBs] createTeam failed:', e.message);
+    } finally {
+      setCreating(false);
+    }
   };
 
   const joinTeam = () => {
@@ -2251,7 +2270,7 @@ function TeamSelectPage({ currentUser, teams, setTeams, members, setMembers, myT
         h('p', { className:'card-title', style:{marginBottom:'12px'} }, 'สร้างทีมใหม่'),
         h('input', { className:'form-input', value:teamName, onChange:e=>setTeamName(e.target.value), placeholder:'ชื่อทีม...', style:{marginBottom:'10px'} }),
         h('div', { style:{display:'flex', gap:'8px'} },
-          h('button', { className:'btn btn-primary', onClick:createTeam }, 'สร้าง'),
+          h('button', { className:'btn btn-primary', onClick:createTeam, disabled:creating }, creating ? 'กำลังสร้าง...' : 'สร้าง'),
           h('button', { className:'btn', onClick:()=>setShowCreate(false) }, 'ยกเลิก')
         )
       ),
