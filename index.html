@@ -9,7 +9,7 @@
            script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
            style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
            font-src https://fonts.gstatic.com;
-           connect-src 'self' https://script.google.com https://script.googleusercontent.com;
+           connect-src 'self' https://script.google.com https://script.googleusercontent.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com;
            img-src 'self' data: blob:;
            object-src 'none';
            base-uri 'self';">
@@ -643,7 +643,7 @@ const detectionOpts = ['Positive','Negative'];
 // ─── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────────────
 // ใส่ URL ของ Google Apps Script Web App ที่ Deploy แล้ว
 // [FIX VULN-06] SS_ID ถูกลบออกจาก client-side code แล้ว — อยู่ใน Code.gs เท่านั้น
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbzFM5HJr4KF_XVCZAfVH2pgyPdOq7aua2kr-31BfPgG27MFWceBWHip2asHaDp414T32Q/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbwLbcmjyQBWNXwJsJJDw35C7DjYxlaAA3KosA92jNSEMeDOUbTrJhLKeOAR9M8ZPbBDZA/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
 
 // ─── SESSION TOKEN ────────────────────────────────────────────────────────────
 // [FIX VULN-02] Token ออกโดย GAS หลัง login สำเร็จ แนบทุก request
@@ -859,14 +859,12 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [syncErr, setSyncErr] = useState(null);
 
-  // [FIX] ถ้าไม่มี token ใน sessionStorage → ไม่ restore user/team จาก localStorage
-  // (token หายเมื่อปิด tab/reload — ต้อง login ใหม่เพื่อรับ token ใหม่จาก GAS)
+  // [FIX] token อยู่ใน sessionStorage (หายเมื่อ reload) — ถ้าไม่มี token อย่า restore user/team
   const [currentUser, setCurrentUserState] = useState(() => getAuthToken() ? getSession('qah_session_user', null) : null);
   const [currentTeam, setCurrentTeamState] = useState(() => getAuthToken() ? getSession('qah_session_team', null) : null);
   const [page, setPage] = useState(() => {
-    const token = getAuthToken();
     // [FIX] sessionStorage token หายเมื่อ reload → ถ้าไม่มี token ต้อง login ใหม่เสมอ
-    if (!token) return 'login';
+    if (!getAuthToken()) return 'login';
     const u = getSession('qah_session_user', null);
     const t = getSession('qah_session_team', null);
     if (u && t) return 'dashboard';
@@ -888,14 +886,10 @@ function App() {
       return;
     }
 
-    // [FIX VULN-02][FIX MEDIUM-3] ถ้าไม่มี token ให้ล้าง session แล้วไปหน้า login
-    // สาเหตุ: token อยู่ใน sessionStorage (หายเมื่อ reload/ปิด tab)
-    //          แต่ currentUser อยู่ใน localStorage (ยังอยู่) → ต้อง force logout
+    // [FIX] token อยู่ใน sessionStorage — ถ้าไม่มีให้ clear localStorage session แล้วไป login
     if (!token) {
-      setCurrentUserState(null);
-      setSession('qah_session_user', null);
-      setCurrentTeamState(null);
-      setSession('qah_session_team', null);
+      setCurrentUserState(null); setSession('qah_session_user', null);
+      setCurrentTeamState(null); setSession('qah_session_team', null);
       setLoading(false);
       return;
     }
