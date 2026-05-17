@@ -13,32 +13,15 @@
            img-src 'self' data: blob:;
            object-src 'none';
            base-uri 'self';">
-<title>QAHUBs — Test Management v14</title>
-<!-- QAHUBs v14 | Soft Delete Fix — ข้อมูลไม่กลับมาหลังลบ
-     Fixes applied:
-       [FIX-SD-1] deleteProj/deleteTask/deleteTC/deleteDefect/deleteSelected
-                  → mark isDeleted:true ใน local state แทน filter ออก
-                  → ป้องกัน race condition กับ syncSheet diff / refreshFromSheets
-       [FIX-SD-2] syncSheet — skip INSERT/UPDATE item ที่ isDeleted=true
-                  → ไม่ re-insert item ที่ถูก soft-delete กลับไป Sheet
-       [FIX-SD-3] teamProjects/teamTasks/teamTCs/teamDefects useMemo
-                  → filter isDeleted:true ออกก่อน render เสมอ
-       [FIX-SD-4] ptasks/taskTCs/ptcs ใน render functions
-                  → filter isDeleted ออกในทุกจุดที่ใช้ raw state โดยตรง
-
-     Fixes applied:
-       [CRITICAL-1] Reset password via dedicated GAS action + OTP binding
-       [CRITICAL-2] Hardcoded secrets removed — Script Properties only
-       [CRITICAL-3] Auth token → sessionStorage + Content-Security-Policy
-       [HIGH-1]     getAll token moved from URL query → encoded payload
-       [HIGH-2]     OTP uses crypto.randomUUID / getSecureRandomBytes
-       [HIGH-3]     uid() uses crypto.randomUUID() instead of Math.random()
-       [HIGH-4]     ActivityLogPage — isAdmin guard added
-       [MEDIUM-1]   LockService for pending race condition (GAS side)
-       [MEDIUM-2]   inviteCode validated server-side (GAS side)
-       [MEDIUM-3]   No localStorage fallback for auth/data load
-       [LOW-1]      OTP code not logged in GAS execution log
-       [LOW-2]      Token TTL 2h + absolute maxExpiry 12h
+<title>QAHUBs — Test Management v15</title>
+<!-- QAHUBs v15 | Forgot Password Flow Fix
+     [FIX-FP-1] handleResetEmailCheck — ไม่เรียก api.getAll('users') อีกต่อไป
+                เดิม: getAll ต้องการ token → fail เพราะยังไม่ได้ login → step OTP ไม่เปิด
+                ใหม่: ส่ง sendVerifyCode + purpose:'reset' → GAS ตรวจ email เอง server-side
+     [FIX-FP-2] Resend OTP button — เพิ่ม purpose:'reset' ให้ครบ
+     [GAS-FP-1] sendVerifyCode รับ body.purpose → ตรวจ email ใน Sheet + ส่ง email template รีเซ็ต
+     [GAS-FP-2] handleResetPassword — อ่าน header จาก Sheet จริง (position-safe), update password + updatedAt
+     [GAS-FP-3] dispatcher ส่ง body ให้ sendVerifyCode (เดิมส่งแค่ email)
 -->
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
@@ -654,7 +637,7 @@ const detectionOpts = ['Positive','Negative'];
 // ─── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────────────
 // ใส่ URL ของ Google Apps Script Web App ที่ Deploy แล้ว
 // [FIX VULN-06] SS_ID ถูกลบออกจาก client-side code แล้ว — อยู่ใน Code.gs เท่านั้น
-const GAS_URL = 'https://script.google.com/macros/s/AKfycby1haT1HqHf-DxqgQqFtbbOWF-5kX1t-d_J2vJbWnjuNiohECekXC_mybOHP97BLWqdJA/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbw7zALQNszBQuRTPnIEgjNGgEaNZK6BI_WVQivF-P4fGRKHWikxP7an5ELHwudJLlq4aQ/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
 
 // ─── SESSION TOKEN ────────────────────────────────────────────────────────────
 // [FIX VULN-02] Token ออกโดย GAS หลัง login สำเร็จ แนบทุก request
@@ -1448,30 +1431,29 @@ function LoginPage({ users, setUsers, setUsersState, setTeamsState, setMembersSt
     }, 1000);
   };
 
-  // Step 1 — verify email exists then send OTP
+  // Step 1 — ส่ง OTP ให้ GAS ตรวจ email + ส่งอีเมล (ไม่ต้อง getAll ซึ่งต้องการ token)
   const handleResetEmailCheck = async () => {
     const emailTrim = resetEmail.trim().toLowerCase();
     if (!emailTrim) { setResetErr('กรุณากรอกอีเมล'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrim)) { setResetErr('รูปแบบอีเมลไม่ถูกต้อง'); return; }
     setResetErr('');
     setResetEmailLoading(true);
-    let freshUsers = users;
-    if (GAS_URL) {
-      try { freshUsers = await api.getAll('users'); } catch(e) {}
-    }
-    const found = freshUsers.find(u => String(u.email).trim().toLowerCase() === emailTrim);
-    if (!found) {
-      setResetErr('ไม่พบบัญชีที่ใช้อีเมลนี้');
+    try {
+      // [FIX v15] ส่ง purpose:'reset' → GAS จะตรวจ email ใน Users Sheet + ส่ง template รีเซ็ต password
+      // ไม่เรียก api.getAll('users') ซึ่งต้องการ auth token (ยังไม่ได้ login)
+      const res = await api.rawWrite({ action: 'sendVerifyCode', email: emailTrim, purpose: 'reset' });
+      if (!res.ok) {
+        setResetErr(res.error || 'ส่งอีเมลไม่สำเร็จ');
+        setResetEmailLoading(false);
+        return;
+      }
+    } catch(e) {
+      setResetErr('เกิดข้อผิดพลาด: ' + e.message);
       setResetEmailLoading(false);
       return;
     }
-    setResetFoundUser(found);
-    // Send OTP
-    try {
-      const res = await api.rawWrite({ action: 'sendVerifyCode', email: emailTrim });
-      if (!res.ok) { setResetErr('ส่งอีเมลไม่สำเร็จ: ' + res.error); setResetEmailLoading(false); return; }
-    } catch(e) {
-      setResetErr('เกิดข้อผิดพลาด: ' + e.message); setResetEmailLoading(false); return;
-    }
+    // GAS ยืนยัน email มีอยู่จริงและส่ง OTP แล้ว
+    setResetFoundUser({ email: emailTrim }); // เก็บแค่ email ไว้ใช้ใน step ถัดไป
     setResetOtp('');
     setResetOtpErr('');
     setResetStep('otp');
@@ -1900,7 +1882,8 @@ function LoginPage({ users, setUsers, setUsersState, setTeamsState, setMembersSt
                     onClick:async()=>{
                       setResetOtpErr('');
                       try {
-                        const res = await api.rawWrite({ action:'sendVerifyCode', email:resetFoundUser.email.trim().toLowerCase() });
+                        // [FIX v15] ส่ง purpose:'reset' เพื่อให้ GAS ส่ง email template ถูก
+                        const res = await api.rawWrite({ action:'sendVerifyCode', email:resetFoundUser.email.trim().toLowerCase(), purpose:'reset' });
                         if (res.ok) startResetResendTimer();
                         else setResetOtpErr('ส่งอีกครั้งไม่สำเร็จ: '+res.error);
                       } catch(ex){ setResetOtpErr(ex.message); }
@@ -3151,17 +3134,9 @@ function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, s
       const tc = (testCases || []).find(x => x.id === d.testCaseId);
       return tc && projTaskIds.includes(tc.taskId);
     }).map(d => d.id);
-    // ส่ง soft-delete ไปยัง GAS โดยตรง (ไม่รอ syncSheet diff)
-    if (USE_GAS) {
-      projDefIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
-      projTCIds.forEach(id => api.delete('testCases', id).catch(e => console.error('del tc', id, e)));
-      projTaskIds.forEach(id => api.delete('tasks', id).catch(e => console.error('del task', id, e)));
-      api.delete('projects', p.id).catch(e => console.error('del project', p.id, e));
-    }
-    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
-    // ป้องกัน race condition: ถ้า syncSheet diff เห็น item หาย → re-insert กลับ
+
+    // [FIX-SD] mark isDeleted:true ใน local state ก่อน (optimistic)
     const ts = now();
-    const markDel = id => x => x.id === id ? {...x, isDeleted: true, updatedAt: ts} : x;
     setDefectsState(prev => prev.map(d => projDefIds.includes(d.id) ? {...d, isDeleted: true, updatedAt: ts} : d));
     setTestCasesState(prev => prev.map(tc => projTCIds.includes(tc.id) ? {...tc, isDeleted: true, updatedAt: ts} : tc));
     setTasksState(prev => prev.map(t => projTaskIds.includes(t.id) ? {...t, isDeleted: true, updatedAt: ts} : t));
@@ -3169,6 +3144,18 @@ function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, s
     addLog('Delete Project', `ลบ Project: ${p.name} (cascade)`);
     showToast(`ลบ Project "${p.name}" และข้อมูลทั้งหมดสำเร็จ`);
     setDelConfirm(null);
+
+    // ส่ง soft-delete ไปยัง GAS (หลัง update local state แล้ว)
+    if (USE_GAS) {
+      const onDelErr = (label, id, e) => {
+        console.error(`del ${label} ${id}:`, e.message);
+        showToast(`⚠️ Sync ล้มเหลว (${label}): ${e.message} — กรุณา Refresh`, 'error');
+      };
+      projDefIds.forEach(id => api.delete('defects', id).catch(e => onDelErr('defect', id, e)));
+      projTCIds.forEach(id => api.delete('testCases', id).catch(e => onDelErr('tc', id, e)));
+      projTaskIds.forEach(id => api.delete('tasks', id).catch(e => onDelErr('task', id, e)));
+      api.delete('projects', p.id).catch(e => onDelErr('project', p.id, e));
+    }
   };
 
   return h('div', null,
@@ -3250,18 +3237,13 @@ function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, setTe
   const openEdit = (t) => { setForm({name:t.name,description:t.description||'',status:t.status||'Active',priority:t.priority||'Medium',assignee:t.assignee||''}); setEditTask(t); setShowModal(true); };
 
   const deleteTask = (t) => {
-    // cascade soft-delete: defects → testCases → task (ใช้ raw state setters ไม่ trigger syncSheet ซ้ำ)
+    // cascade soft-delete: defects → testCases → task
     const taskTCIds = testCases.filter(tc => tc.taskId === t.id).map(tc => tc.id);
     const taskDefIds = defects.filter(d => {
       const tc = testCases.find(x => x.id === d.testCaseId);
       return tc && tc.taskId === t.id;
     }).map(d => d.id);
-    if (USE_GAS) {
-      taskDefIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
-      taskTCIds.forEach(id => api.delete('testCases', id).catch(e => console.error('del tc', id, e)));
-      api.delete('tasks', t.id).catch(e => console.error('del task', t.id, e));
-    }
-    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
+    // [FIX-SD] mark isDeleted:true ใน local state ก่อน (optimistic)
     const ts = now();
     setDefectsState(prev => prev.map(d => taskDefIds.includes(d.id) ? {...d, isDeleted: true, updatedAt: ts} : d));
     setTestCasesState(prev => prev.map(tc => taskTCIds.includes(tc.id) ? {...tc, isDeleted: true, updatedAt: ts} : tc));
@@ -3269,6 +3251,15 @@ function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, setTe
     addLog('Delete Task', `ลบ Task: ${t.name}`);
     showToast(`ลบ Task "${t.name}" สำเร็จ`);
     setDelConfirm(null);
+    if (USE_GAS) {
+      const onDelErr = (label, id, e) => {
+        console.error(`del ${label} ${id}:`, e.message);
+        showToast(`⚠️ Sync ล้มเหลว (${label}): ${e.message} — กรุณา Refresh`, 'error');
+      };
+      taskDefIds.forEach(id => api.delete('defects', id).catch(e => onDelErr('defect', id, e)));
+      taskTCIds.forEach(id => api.delete('testCases', id).catch(e => onDelErr('tc', id, e)));
+      api.delete('tasks', t.id).catch(e => onDelErr('task', t.id, e));
+    }
   };
 
   const statuses = statusOpts.map(s=>({s,count:ptcs.filter(tc=>tc.status===s).length}));
@@ -3395,19 +3386,22 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
   });
 
   const deleteTC = (tc) => {
-    // [SOFT DELETE] ลบ defects ที่ผูกกับ TC นี้และ TC เอง ผ่าน api.delete โดยตรง (raw state — ไม่ trigger syncSheet ซ้ำ)
     const linkedDefectIds = defects.filter(d => d.testCaseId === tc.id).map(d => d.id);
-    if (USE_GAS) {
-      linkedDefectIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
-      api.delete('testCases', tc.id).catch(e => console.error('del tc', tc.id, e));
-    }
-    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
+    // [FIX-SD] mark isDeleted:true ใน local state ก่อน (optimistic)
     const ts = now();
     setTestCasesState(p => p.map(x => x.id === tc.id ? {...x, isDeleted: true, updatedAt: ts} : x));
     setDefectsState(p => p.map(x => x.testCaseId === tc.id ? {...x, isDeleted: true, updatedAt: ts} : x));
     addLog('Delete TC', `ลบ TC: ${tc.title}`);
     showToast('ลบ Test Case สำเร็จ');
     setDelConfirm(null);
+    if (USE_GAS) {
+      const onDelErr = (label, id, e) => {
+        console.error(`del ${label} ${id}:`, e.message);
+        showToast(`⚠️ Sync ล้มเหลว (${label}): ${e.message} — กรุณา Refresh`, 'error');
+      };
+      linkedDefectIds.forEach(id => api.delete('defects', id).catch(e => onDelErr('defect', id, e)));
+      api.delete('testCases', tc.id).catch(e => onDelErr('tc', tc.id, e));
+    }
   };
 
   const cloneTC = (tc) => {
@@ -3440,20 +3434,23 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
   };
 
   const deleteSelected = () => {
-    // [SOFT DELETE] ลบ TCs และ defects ผ่าน api.delete โดยตรง (raw state — ไม่ trigger syncSheet ซ้ำ)
     const selectedSet = new Set(selected);
     const linkedDefectIds = defects.filter(d => selectedSet.has(d.testCaseId)).map(d => d.id);
-    if (USE_GAS) {
-      linkedDefectIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
-      selected.forEach(id => api.delete('testCases', id).catch(e => console.error('del tc', id, e)));
-    }
-    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
+    // [FIX-SD] mark isDeleted:true ใน local state ก่อน (optimistic)
     const ts = now();
     setTestCasesState(p => p.map(x => selectedSet.has(x.id) ? {...x, isDeleted: true, updatedAt: ts} : x));
     setDefectsState(p => p.map(x => selectedSet.has(x.testCaseId) ? {...x, isDeleted: true, updatedAt: ts} : x));
     addLog('Bulk Delete TC', `ลบ ${selected.length} TC`);
     showToast(`ลบ ${selected.length} Test Cases สำเร็จ`);
     setSelected([]);
+    if (USE_GAS) {
+      const onDelErr = (label, id, e) => {
+        console.error(`del ${label} ${id}:`, e.message);
+        showToast(`⚠️ Sync ล้มเหลว (${label}): ${e.message} — กรุณา Refresh`, 'error');
+      };
+      linkedDefectIds.forEach(id => api.delete('defects', id).catch(e => onDelErr('defect', id, e)));
+      selected.forEach(id => api.delete('testCases', id).catch(e => onDelErr('tc', id, e)));
+    }
   };
 
   const moveTCs = (tcIds, targetTaskId) => {
@@ -4628,13 +4625,16 @@ function DefectsPage({ teamDefects, setDefects, setDefectsState, testCases, team
     }
   };
   const deleteDefect = (id) => {
-    if (USE_GAS) {
-      api.delete('defects', id).catch(e => console.error('del defect', id, e));
-    }
-    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
+    // [FIX-SD] mark isDeleted:true ใน local state ก่อน (optimistic)
     setDefectsState(p => p.map(x => x.id === id ? {...x, isDeleted: true, updatedAt: now()} : x));
     addLog('Delete Defect', `ลบ Defect id: ${id}`);
     showToast('ลบ Defect สำเร็จ');
+    if (USE_GAS) {
+      api.delete('defects', id).catch(e => {
+        console.error('del defect', id, e.message);
+        showToast(`⚠️ Sync ล้มเหลว (defect): ${e.message} — กรุณา Refresh`, 'error');
+      });
+    }
   };
   const cloneDefect = (d) => {
     const cloned = {...d, id:uid(), defectId:'DEF-'+uid().slice(0,5).toUpperCase(), createdAt:now(), createdBy:currentUser.id, relatedTcIds:[], testCaseId:null, title:'[Clone] '+d.title};
