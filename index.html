@@ -643,7 +643,7 @@ const detectionOpts = ['Positive','Negative'];
 // ─── GOOGLE SHEETS CONFIG ─────────────────────────────────────────────────────
 // ใส่ URL ของ Google Apps Script Web App ที่ Deploy แล้ว
 // [FIX VULN-06] SS_ID ถูกลบออกจาก client-side code แล้ว — อยู่ใน Code.gs เท่านั้น
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbydDMj7ubs8Ah6GfJCWXg8yhaGNww8OH5i7VyPea3QQXFtT38yxs24DpTdtoNe_KtSMtg/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbwB3AxQS2qBVCAyfR6dfXZiyp89WJm6x8cFZuyM5S0Oo_RybqGbexde2XT2rSlJMhNrIQ/exec'; // ← ใส่ GAS URL ใหม่หลัง re-deploy
 
 // ─── SESSION TOKEN ────────────────────────────────────────────────────────────
 // [FIX VULN-02] Token ออกโดย GAS หลัง login สำเร็จ แนบทุก request
@@ -1288,6 +1288,7 @@ function App() {
   const ctx = { users, setUsers, teams, setTeams, members, setMembers, setTeamsState, setMembersState,
     projects, setProjects, tasks, setTasks, testCases, setTestCases,
     defects, setDefects, logs, setLogs, loginLogs, setLoginLogs,
+    setProjectsState, setTasksState, setTestCasesState, setDefectsState,
     currentUser, setCurrentUser, currentTeam, setCurrentTeam,
     page, setPage, navCtx, setNavCtx, showToast, addLog,
     myTeams, myRole, isAdmin, canEdit, canDelete, canView,
@@ -3098,7 +3099,7 @@ function DashboardPage({ teamTCs, teamDefects, teamProjects, teamTasks, navigate
 }
 
 // ─── PROJECTS PAGE ────────────────────────────────────────────────────────────
-function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, setTestCases, defects, setDefects, teamTasks, currentTeam, currentUser, canEdit, canDelete, showToast, addLog, navigate, USE_GAS }) {
+function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, setTestCases, defects, setDefects, setProjectsState, setTasksState, setTestCasesState, setDefectsState, teamTasks, currentTeam, currentUser, canEdit, canDelete, showToast, addLog, navigate, USE_GAS }) {
   const [showModal, setShowModal] = useState(false);
   const [editProj, setEditProj] = useState(null);
   const [form, setForm] = useState({ name:'', description:'', status:'Active', startDate:'', endDate:'', tcMode:'standard' });
@@ -3126,18 +3127,25 @@ function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, s
   };
 
   const deleteProj = (p) => {
-    // cascade delete: tasks → testCases → defects ก่อนลบ project
+    // cascade soft-delete: defects → testCases → tasks → project
     const projTaskIds = tasks.filter(t => t.projectId === p.id).map(t => t.id);
-    setDefects(prev => prev.filter(d => {
+    const projTCIds = (testCases || []).filter(tc => projTaskIds.includes(tc.taskId)).map(tc => tc.id);
+    const projDefIds = defects.filter(d => {
       const tc = (testCases || []).find(x => x.id === d.testCaseId);
-      return !(tc && projTaskIds.includes(tc.taskId));
-    }));
-    setTestCases(prev => prev.filter(tc => {
-      const task = tasks.find(t => t.id === tc.taskId);
-      return !(task && task.projectId === p.id);
-    }));
-    setTasks(prev => prev.filter(t => t.projectId !== p.id));
-    setProjects(pr => pr.filter(x => x.id !== p.id));
+      return tc && projTaskIds.includes(tc.taskId);
+    }).map(d => d.id);
+    // ส่ง soft-delete ไปยัง GAS โดยตรง (ไม่รอ syncSheet diff)
+    if (USE_GAS) {
+      projDefIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
+      projTCIds.forEach(id => api.delete('testCases', id).catch(e => console.error('del tc', id, e)));
+      projTaskIds.forEach(id => api.delete('tasks', id).catch(e => console.error('del task', id, e)));
+      api.delete('projects', p.id).catch(e => console.error('del project', p.id, e));
+    }
+    // อัพเดท local state — filter ออกทันที (ไม่รอ response)
+    setDefectsState(prev => prev.filter(d => !projDefIds.includes(d.id)));
+    setTestCasesState(prev => prev.filter(tc => !projTCIds.includes(tc.id)));
+    setTasksState(prev => prev.filter(t => t.projectId !== p.id));
+    setProjectsState(pr => pr.filter(x => x.id !== p.id));
     addLog('Delete Project', `ลบ Project: ${p.name} (cascade)`);
     showToast(`ลบ Project "${p.name}" และข้อมูลทั้งหมดสำเร็จ`);
     setDelConfirm(null);
@@ -3191,7 +3199,7 @@ function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, s
 }
 
 // ─── PROJECT DETAIL PAGE ──────────────────────────────────────────────────────
-function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, setTestCases, defects, setDefects, teamTCs, teamTasks, currentUser, currentTeam, canEdit, canDelete, showToast, addLog, navigate }) {
+function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, setTestCases, defects, setDefects, setTasksState, setTestCasesState, setDefectsState, teamTCs, teamTasks, currentUser, currentTeam, canEdit, canDelete, showToast, addLog, navigate, USE_GAS }) {
   const project = projects.find(p => p.id === navCtx.projectId);
   const [showModal, setShowModal] = useState(false);
   const [editTask, setEditTask] = useState(null);
@@ -3222,13 +3230,20 @@ function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, setTe
   const openEdit = (t) => { setForm({name:t.name,description:t.description||'',status:t.status||'Active',priority:t.priority||'Medium',assignee:t.assignee||''}); setEditTask(t); setShowModal(true); };
 
   const deleteTask = (t) => {
-    // cascade delete: testCases → defects ก่อนลบ task
-    setDefects(prev => prev.filter(d => {
+    // cascade soft-delete: defects → testCases → task (ใช้ raw state setters ไม่ trigger syncSheet ซ้ำ)
+    const taskTCIds = testCases.filter(tc => tc.taskId === t.id).map(tc => tc.id);
+    const taskDefIds = defects.filter(d => {
       const tc = testCases.find(x => x.id === d.testCaseId);
-      return !(tc && tc.taskId === t.id);
-    }));
-    setTestCases(prev => prev.filter(tc => tc.taskId !== t.id));
-    setTasks(p => p.filter(x => x.id !== t.id));
+      return tc && tc.taskId === t.id;
+    }).map(d => d.id);
+    if (USE_GAS) {
+      taskDefIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
+      taskTCIds.forEach(id => api.delete('testCases', id).catch(e => console.error('del tc', id, e)));
+      api.delete('tasks', t.id).catch(e => console.error('del task', t.id, e));
+    }
+    setDefectsState(prev => prev.filter(d => !taskDefIds.includes(d.id)));
+    setTestCasesState(prev => prev.filter(tc => tc.taskId !== t.id));
+    setTasksState(p => p.filter(x => x.id !== t.id));
     addLog('Delete Task', `ลบ Task: ${t.name}`);
     showToast(`ลบ Task "${t.name}" สำเร็จ`);
     setDelConfirm(null);
@@ -3322,7 +3337,7 @@ function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, setTe
 }
 
 // ─── TASK DETAIL PAGE (Test Cases) ───────────────────────────────────────────
-function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTestCases, defects, setDefects, currentUser, users, currentTeam, canEdit, canDelete, showToast, addLog, navigate, openDefectModal, USE_GAS }) {
+function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTestCases, defects, setDefects, setTestCasesState, setDefectsState, currentUser, users, currentTeam, canEdit, canDelete, showToast, addLog, navigate, openDefectModal, USE_GAS }) {
   const task = tasks.find(t => t.id === navCtx.taskId);
   const project = projects.find(p => p.id === navCtx.projectId);
   const [tab, setTab] = useState('testcases');
@@ -3358,14 +3373,14 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
   });
 
   const deleteTC = (tc) => {
-    // [FIX v13] ลบ defects ที่ผูกกับ TC นี้ผ่าน api.delete โดยตรงก่อน
-    // จากนั้นลบ TC ผ่าน setTestCases (makeSet) ตามปกติ
-    // และลบ defects ออกจาก local state ผ่าน setDefects (makeSet) เช่นกัน
-    // syncSheet diff จะ detect delete ถูกต้องเพราะ defects linked TC นี้หายไปจาก newData
-    const linkedDefects = defects.filter(d => d.testCaseId === tc.id);
-    // ลบ TC และ defects ใน local state พร้อมกัน — syncSheet จะ diff และส่ง api.delete อัตโนมัติ
-    setTestCases(p => p.filter(x => x.id !== tc.id));
-    setDefects(p => p.filter(x => x.testCaseId !== tc.id));
+    // [SOFT DELETE] ลบ defects ที่ผูกกับ TC นี้และ TC เอง ผ่าน api.delete โดยตรง (raw state — ไม่ trigger syncSheet ซ้ำ)
+    const linkedDefectIds = defects.filter(d => d.testCaseId === tc.id).map(d => d.id);
+    if (USE_GAS) {
+      linkedDefectIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
+      api.delete('testCases', tc.id).catch(e => console.error('del tc', tc.id, e));
+    }
+    setTestCasesState(p => p.filter(x => x.id !== tc.id));
+    setDefectsState(p => p.filter(x => x.testCaseId !== tc.id));
     addLog('Delete TC', `ลบ TC: ${tc.title}`);
     showToast('ลบ Test Case สำเร็จ');
     setDelConfirm(null);
@@ -3401,10 +3416,15 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
   };
 
   const deleteSelected = () => {
-    // [FIX v13] ลบ TCs ทั้งหมดพร้อมกัน แล้วลบ defects ที่ผูกไว้ทีเดียว (ไม่ loop setDefects)
+    // [SOFT DELETE] ลบ TCs และ defects ผ่าน api.delete โดยตรง (raw state — ไม่ trigger syncSheet ซ้ำ)
     const selectedSet = new Set(selected);
-    setTestCases(p => p.filter(x => !selectedSet.has(x.id)));
-    setDefects(p => p.filter(x => !selectedSet.has(x.testCaseId)));
+    const linkedDefectIds = defects.filter(d => selectedSet.has(d.testCaseId)).map(d => d.id);
+    if (USE_GAS) {
+      linkedDefectIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
+      selected.forEach(id => api.delete('testCases', id).catch(e => console.error('del tc', id, e)));
+    }
+    setTestCasesState(p => p.filter(x => !selectedSet.has(x.id)));
+    setDefectsState(p => p.filter(x => !selectedSet.has(x.testCaseId)));
     addLog('Bulk Delete TC', `ลบ ${selected.length} TC`);
     showToast(`ลบ ${selected.length} Test Cases สำเร็จ`);
     setSelected([]);
@@ -4541,7 +4561,7 @@ function DefectsInTC({ tc, defects, setDefects, testCases, currentUser, canEdit,
 }
 
 // ─── DEFECTS PAGE ─────────────────────────────────────────────────────────────
-function DefectsPage({ teamDefects, setDefects, testCases, teamTCs, teamTasks, teamProjects, currentUser, users, canEdit, canDelete, showToast, addLog, openDefectModal }) {
+function DefectsPage({ teamDefects, setDefects, setDefectsState, testCases, teamTCs, teamTasks, teamProjects, currentUser, users, canEdit, canDelete, showToast, addLog, openDefectModal, USE_GAS }) {
   const [search, setSearch] = useState('');
   const [filterSev, setFilterSev] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
@@ -4581,7 +4601,14 @@ function DefectsPage({ teamDefects, setDefects, testCases, teamTCs, teamTasks, t
       showToast('อัพเดทแล้ว');
     }
   };
-  const deleteDefect = (id) => { setDefects(p=>p.filter(x=>x.id!==id)); showToast('ลบ Defect สำเร็จ'); };
+  const deleteDefect = (id) => {
+    if (USE_GAS) {
+      api.delete('defects', id).catch(e => console.error('del defect', id, e));
+    }
+    setDefectsState(p=>p.filter(x=>x.id!==id));
+    addLog('Delete Defect', `ลบ Defect id: ${id}`);
+    showToast('ลบ Defect สำเร็จ');
+  };
   const cloneDefect = (d) => {
     const cloned = {...d, id:uid(), defectId:'DEF-'+uid().slice(0,5).toUpperCase(), createdAt:now(), createdBy:currentUser.id, relatedTcIds:[], testCaseId:null, title:'[Clone] '+d.title};
     setDefects(p=>[...p,cloned]);
