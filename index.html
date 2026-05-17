@@ -13,8 +13,19 @@
            img-src 'self' data: blob:;
            object-src 'none';
            base-uri 'self';">
-<title>QAHUBs — Test Management v13</title>
-<!-- QAHUBs v13 | Security Hardened + createTeam Race Condition Fix
+<title>QAHUBs — Test Management v14</title>
+<!-- QAHUBs v14 | Soft Delete Fix — ข้อมูลไม่กลับมาหลังลบ
+     Fixes applied:
+       [FIX-SD-1] deleteProj/deleteTask/deleteTC/deleteDefect/deleteSelected
+                  → mark isDeleted:true ใน local state แทน filter ออก
+                  → ป้องกัน race condition กับ syncSheet diff / refreshFromSheets
+       [FIX-SD-2] syncSheet — skip INSERT/UPDATE item ที่ isDeleted=true
+                  → ไม่ re-insert item ที่ถูก soft-delete กลับไป Sheet
+       [FIX-SD-3] teamProjects/teamTasks/teamTCs/teamDefects useMemo
+                  → filter isDeleted:true ออกก่อน render เสมอ
+       [FIX-SD-4] ptasks/taskTCs/ptcs ใน render functions
+                  → filter isDeleted ออกในทุกจุดที่ใช้ raw state โดยตรง
+
      Fixes applied:
        [CRITICAL-1] Reset password via dedicated GAS action + OTP binding
        [CRITICAL-2] Hardcoded secrets removed — Script Properties only
@@ -982,14 +993,20 @@ function App() {
       setToast({ msg: `Sync ล้มเหลว (${action} ${sheet}): ${e.message}`, type:'error', id: uid() });
     };
 
+    // [FIX-SD] ไม่ sync item ที่ isDeleted=true ผ่าน INSERT/UPDATE (ถูกจัดการโดย api.delete โดยตรงแล้ว)
+    const SOFT_DEL_SHEETS = ['projects','tasks','testCases','defects'];
+    const isSoftDelSheet = SOFT_DEL_SHEETS.indexOf(sheet) !== -1;
+
     // INSERT new rows
     newData.forEach(item => {
+      if (isSoftDelSheet && (item.isDeleted === true || item.isDeleted === 'true')) return; // skip deleted
       if (!oldMap[item.id]) {
         api.insert(sheet, item).catch(e => onErr('insert', item.id, e));
       }
     });
     // UPDATE changed rows
     newData.forEach(item => {
+      if (isSoftDelSheet && (item.isDeleted === true || item.isDeleted === 'true')) return; // skip deleted
       if (oldMap[item.id] && stableStr(oldMap[item.id]) !== stableStr(item)) {
         api.update(sheet, item).catch(e => onErr('update', item.id, e));
       }
@@ -1159,10 +1176,10 @@ function App() {
   const canView = true;
 
   // Scoped data to current team
-  const teamProjects = useMemo(() => projects.filter(p => p.teamId === currentTeam?.id), [projects, currentTeam]);
-  const teamTasks = useMemo(() => tasks.filter(t => teamProjects.some(p => p.id === t.projectId)), [tasks, teamProjects]);
-  const teamTCs = useMemo(() => testCases.filter(tc => teamTasks.some(t => t.id === tc.taskId)), [testCases, teamTasks]);
-  const teamDefects = useMemo(() => defects.filter(d => { const ids = toArr(d.relatedTcIds).length ? toArr(d.relatedTcIds) : (d.testCaseId ? [d.testCaseId] : []); return ids.some(id => teamTCs.some(tc => tc.id === id)) || d.teamId === currentTeam?.id || (!ids.length && d.createdBy); }), [defects, teamTCs, currentTeam]);
+  const teamProjects = useMemo(() => projects.filter(p => p.teamId === currentTeam?.id && !p.isDeleted && p.isDeleted !== 'true'), [projects, currentTeam]);
+  const teamTasks = useMemo(() => tasks.filter(t => !t.isDeleted && t.isDeleted !== 'true' && teamProjects.some(p => p.id === t.projectId)), [tasks, teamProjects]);
+  const teamTCs = useMemo(() => testCases.filter(tc => !tc.isDeleted && tc.isDeleted !== 'true' && teamTasks.some(t => t.id === tc.taskId)), [testCases, teamTasks]);
+  const teamDefects = useMemo(() => defects.filter(d => { if (d.isDeleted || d.isDeleted === 'true') return false; const ids = toArr(d.relatedTcIds).length ? toArr(d.relatedTcIds) : (d.testCaseId ? [d.testCaseId] : []); return ids.some(id => teamTCs.some(tc => tc.id === id)) || d.teamId === currentTeam?.id || (!ids.length && d.createdBy); }), [defects, teamTCs, currentTeam]);
 
   const [defectModalCtx, setDefectModalCtx] = useState(null);
   const openDefectModal = (editDef, initialTcId, allTCs) => setDefectModalCtx({ editDef, initialTcId, allTCs, _key: editDef ? editDef.id : 'new-defect-'+uid() });
@@ -3141,11 +3158,14 @@ function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, s
       projTaskIds.forEach(id => api.delete('tasks', id).catch(e => console.error('del task', id, e)));
       api.delete('projects', p.id).catch(e => console.error('del project', p.id, e));
     }
-    // อัพเดท local state — filter ออกทันที (ไม่รอ response)
-    setDefectsState(prev => prev.filter(d => !projDefIds.includes(d.id)));
-    setTestCasesState(prev => prev.filter(tc => !projTCIds.includes(tc.id)));
-    setTasksState(prev => prev.filter(t => t.projectId !== p.id));
-    setProjectsState(pr => pr.filter(x => x.id !== p.id));
+    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
+    // ป้องกัน race condition: ถ้า syncSheet diff เห็น item หาย → re-insert กลับ
+    const ts = now();
+    const markDel = id => x => x.id === id ? {...x, isDeleted: true, updatedAt: ts} : x;
+    setDefectsState(prev => prev.map(d => projDefIds.includes(d.id) ? {...d, isDeleted: true, updatedAt: ts} : d));
+    setTestCasesState(prev => prev.map(tc => projTCIds.includes(tc.id) ? {...tc, isDeleted: true, updatedAt: ts} : tc));
+    setTasksState(prev => prev.map(t => projTaskIds.includes(t.id) ? {...t, isDeleted: true, updatedAt: ts} : t));
+    setProjectsState(prev => prev.map(x => x.id === p.id ? {...x, isDeleted: true, updatedAt: ts} : x));
     addLog('Delete Project', `ลบ Project: ${p.name} (cascade)`);
     showToast(`ลบ Project "${p.name}" และข้อมูลทั้งหมดสำเร็จ`);
     setDelConfirm(null);
@@ -3162,7 +3182,7 @@ function ProjectsPage({ teamProjects, setProjects, tasks, setTasks, testCases, s
     filtered.length === 0 ? h('div',{className:'empty'},h('div',{className:'empty-icon'},'📂'),h('div',{className:'empty-title'},'ยังไม่มี Project'),canEdit&&h('button',{className:'btn btn-primary',style:{marginTop:'12px'},onClick:openCreate},'+ สร้าง Project')) :
     h('div', { style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:'14px'} },
       filtered.map(p => {
-        const ptasks = tasks.filter(t=>t.projectId===p.id);
+        const ptasks = tasks.filter(t=>t.projectId===p.id && !t.isDeleted && t.isDeleted!=='true');
         return h('div', { key:p.id, className:'card', style:{cursor:'pointer'}, onClick:()=>navigate('project-detail',{projectId:p.id}) },
           h('div', { className:'flex-between', style:{marginBottom:'10px'} },
             h('div', { style:{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'} },
@@ -3208,7 +3228,7 @@ function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, setTe
   const [tab, setTab] = useState('tasks');
 
   if (!project) return h('div',{className:'empty'},h('div',null,'ไม่พบ Project'));
-  const ptasks = tasks.filter(t => t.projectId === project.id);
+  const ptasks = tasks.filter(t => t.projectId === project.id && !t.isDeleted && t.isDeleted !== 'true');
   const ptcs = teamTCs.filter(tc => ptasks.some(t => t.id === tc.taskId));
 
   const save = () => {
@@ -3241,9 +3261,11 @@ function ProjectDetailPage({ navCtx, projects, tasks, setTasks, testCases, setTe
       taskTCIds.forEach(id => api.delete('testCases', id).catch(e => console.error('del tc', id, e)));
       api.delete('tasks', t.id).catch(e => console.error('del task', t.id, e));
     }
-    setDefectsState(prev => prev.filter(d => !taskDefIds.includes(d.id)));
-    setTestCasesState(prev => prev.filter(tc => tc.taskId !== t.id));
-    setTasksState(p => p.filter(x => x.id !== t.id));
+    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
+    const ts = now();
+    setDefectsState(prev => prev.map(d => taskDefIds.includes(d.id) ? {...d, isDeleted: true, updatedAt: ts} : d));
+    setTestCasesState(prev => prev.map(tc => taskTCIds.includes(tc.id) ? {...tc, isDeleted: true, updatedAt: ts} : tc));
+    setTasksState(prev => prev.map(x => x.id === t.id ? {...x, isDeleted: true, updatedAt: ts} : x));
     addLog('Delete Task', `ลบ Task: ${t.name}`);
     showToast(`ลบ Task "${t.name}" สำเร็จ`);
     setDelConfirm(null);
@@ -3364,7 +3386,7 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
 
   if (!task || !project) return h('div',{className:'empty'},'ไม่พบ Task');
 
-  const taskTCs = testCases.filter(tc => tc.taskId === task.id);
+  const taskTCs = testCases.filter(tc => tc.taskId === task.id && !tc.isDeleted && tc.isDeleted !== 'true');
   const filtered = taskTCs.filter(tc => {
     const matchSearch = !search || tc.title.toLowerCase().includes(search.toLowerCase()) || tc.scenarioDescription?.toLowerCase().includes(search.toLowerCase());
     const matchStatus = !filterStatus || tc.status === filterStatus;
@@ -3379,8 +3401,10 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
       linkedDefectIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
       api.delete('testCases', tc.id).catch(e => console.error('del tc', tc.id, e));
     }
-    setTestCasesState(p => p.filter(x => x.id !== tc.id));
-    setDefectsState(p => p.filter(x => x.testCaseId !== tc.id));
+    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
+    const ts = now();
+    setTestCasesState(p => p.map(x => x.id === tc.id ? {...x, isDeleted: true, updatedAt: ts} : x));
+    setDefectsState(p => p.map(x => x.testCaseId === tc.id ? {...x, isDeleted: true, updatedAt: ts} : x));
     addLog('Delete TC', `ลบ TC: ${tc.title}`);
     showToast('ลบ Test Case สำเร็จ');
     setDelConfirm(null);
@@ -3423,8 +3447,10 @@ function TaskDetailPage({ navCtx, setNavCtx, projects, tasks, testCases, setTest
       linkedDefectIds.forEach(id => api.delete('defects', id).catch(e => console.error('del defect', id, e)));
       selected.forEach(id => api.delete('testCases', id).catch(e => console.error('del tc', id, e)));
     }
-    setTestCasesState(p => p.filter(x => !selectedSet.has(x.id)));
-    setDefectsState(p => p.filter(x => !selectedSet.has(x.testCaseId)));
+    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
+    const ts = now();
+    setTestCasesState(p => p.map(x => selectedSet.has(x.id) ? {...x, isDeleted: true, updatedAt: ts} : x));
+    setDefectsState(p => p.map(x => selectedSet.has(x.testCaseId) ? {...x, isDeleted: true, updatedAt: ts} : x));
     addLog('Bulk Delete TC', `ลบ ${selected.length} TC`);
     showToast(`ลบ ${selected.length} Test Cases สำเร็จ`);
     setSelected([]);
@@ -4605,7 +4631,8 @@ function DefectsPage({ teamDefects, setDefects, setDefectsState, testCases, team
     if (USE_GAS) {
       api.delete('defects', id).catch(e => console.error('del defect', id, e));
     }
-    setDefectsState(p=>p.filter(x=>x.id!==id));
+    // [FIX-SD] mark isDeleted:true ใน local state แทน filter ออก
+    setDefectsState(p => p.map(x => x.id === id ? {...x, isDeleted: true, updatedAt: now()} : x));
     addLog('Delete Defect', `ลบ Defect id: ${id}`);
     showToast('ลบ Defect สำเร็จ');
   };
